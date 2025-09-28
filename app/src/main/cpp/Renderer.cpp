@@ -381,8 +381,22 @@ void Renderer::advanceSnake() {
             break;
     }
 
-    const bool hitWall = newHead.x < 0 || newHead.y < 0
-            || newHead.x >= gridWidth_ || newHead.y >= gridHeight_;
+    if (gridWidth_ > 0) {
+        if (newHead.x < 0) {
+            newHead.x = gridWidth_ - 1;
+        } else if (newHead.x >= gridWidth_) {
+            newHead.x = 0;
+        }
+    }
+
+    if (gridHeight_ > 0) {
+        if (newHead.y < 0) {
+            newHead.y = gridHeight_ - 1;
+        } else if (newHead.y >= gridHeight_) {
+            newHead.y = 0;
+        }
+    }
+
     const bool hitSelf = std::any_of(
             snake_.begin(),
             snake_.end(),
@@ -390,7 +404,7 @@ void Renderer::advanceSnake() {
                 return segment.x == newHead.x && segment.y == newHead.y;
             });
 
-    if (hitWall || hitSelf) {
+    if (hitSelf) {
         resetGame();
         return;
     }

@@ -97,8 +97,8 @@ private:
     std::unique_ptr<Shader> shader_;
     std::vector<Model> models_;
 
-    int gridWidth_ = 20;
-    int gridHeight_ = 20;
+    int gridWidth_ = 100;
+    int gridHeight_ = 100;
     std::vector<Cell> snake_;
     std::vector<Cell> botSnake_;
     Cell food_{};

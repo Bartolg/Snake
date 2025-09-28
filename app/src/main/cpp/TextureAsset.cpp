@@ -73,6 +73,32 @@ TextureAsset::loadAsset(AAssetManager *assetManager, const std::string &assetPat
     return std::shared_ptr<TextureAsset>(new TextureAsset(textureId));
 }
 
+std::shared_ptr<TextureAsset>
+TextureAsset::createSolidColor(uint8_t red, uint8_t green, uint8_t blue, uint8_t alpha) {
+    GLuint textureId = 0;
+    glGenTextures(1, &textureId);
+    glBindTexture(GL_TEXTURE_2D, textureId);
+
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+
+    const uint8_t pixel[4] = {red, green, blue, alpha};
+    glTexImage2D(
+            GL_TEXTURE_2D,
+            0,
+            GL_RGBA,
+            1,
+            1,
+            0,
+            GL_RGBA,
+            GL_UNSIGNED_BYTE,
+            pixel);
+
+    return std::shared_ptr<TextureAsset>(new TextureAsset(textureId));
+}
+
 TextureAsset::~TextureAsset() {
     // return texture resources
     glDeleteTextures(1, &textureID_);

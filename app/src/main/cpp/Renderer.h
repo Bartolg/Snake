@@ -2,7 +2,10 @@
 #define ANDROIDGLINVESTIGATIONS_RENDERER_H
 
 #include <EGL/egl.h>
+#include <chrono>
 #include <memory>
+#include <random>
+#include <vector>
 
 #include "Model.h"
 #include "Shader.h"
@@ -40,6 +43,18 @@ public:
     void render();
 
 private:
+    struct Cell {
+        int x;
+        int y;
+    };
+
+    enum class Direction {
+        Up,
+        Down,
+        Left,
+        Right
+    };
+
     /*!
      * Performs necessary OpenGL initialization. Customize this if you want to change your EGL
      * context or application-wide settings.
@@ -58,6 +73,14 @@ private:
      */
     void createModels();
 
+    void resetGame();
+    void spawnFood();
+    bool rebuildModels();
+    void advanceSnake();
+    void queueDirection(Direction direction);
+    static bool isOpposite(Direction lhs, Direction rhs);
+    void handleSwipe(float startX, float startY, float endX, float endY);
+
     android_app *app_;
     EGLDisplay display_;
     EGLSurface surface_;
@@ -69,6 +92,23 @@ private:
 
     std::unique_ptr<Shader> shader_;
     std::vector<Model> models_;
+
+    int gridWidth_ = 20;
+    int gridHeight_ = 20;
+    std::vector<Cell> snake_;
+    Cell food_{};
+    Direction direction_ = Direction::Right;
+    Direction queuedDirection_ = Direction::Right;
+    std::shared_ptr<TextureAsset> snakeTexture_;
+    std::shared_ptr<TextureAsset> foodTexture_;
+    std::mt19937 randomEngine_;
+    std::chrono::steady_clock::time_point lastFrameTime_;
+    double timeAccumulator_ = 0.0;
+    double moveInterval_ = 0.2;
+    bool needsModelUpdate_ = true;
+    bool touchActive_ = false;
+    float touchStartX_ = 0.f;
+    float touchStartY_ = 0.f;
 };
 
 #endif //ANDROIDGLINVESTIGATIONS_RENDERER_H

@@ -101,7 +101,7 @@ private:
     int gridHeight_ = 100;
     std::vector<Cell> snake_;
     std::vector<Cell> botSnake_;
-    Cell food_{};
+    std::vector<Cell> food_;
     Direction direction_ = Direction::Right;
     Direction queuedDirection_ = Direction::Right;
     Direction botDirection_ = Direction::Left;
@@ -116,6 +116,7 @@ private:
     bool touchActive_ = false;
     float touchStartX_ = 0.f;
     float touchStartY_ = 0.f;
+    size_t targetFoodCount_ = 3;
 };
 
 #endif //ANDROIDGLINVESTIGATIONS_RENDERER_H

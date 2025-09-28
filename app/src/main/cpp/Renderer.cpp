@@ -1,10 +1,13 @@
 #include "Renderer.h"
 
+#include <android/keycodes.h>
 #include <game-activity/native_app_glue/android_native_app_glue.h>
 #include <GLES3/gl3.h>
-#include <memory>
+
+#include <algorithm>
+#include <cmath>
+#include <random>
 #include <vector>
-#include <android/imagedecoder.h>
 
 #include "AndroidOut.h"
 #include "Shader.h"
@@ -101,48 +104,44 @@ Renderer::~Renderer() {
 }
 
 void Renderer::render() {
-    // Check to see if the surface has changed size. This is _necessary_ to do every frame when
-    // using immersive mode as you'll get no other notification that your renderable area has
-    // changed.
     updateRenderArea();
 
-    // When the renderable area changes, the projection matrix has to also be updated. This is true
-    // even if you change from the sample orthographic projection matrix as your aspect ratio has
-    // likely changed.
-    if (shaderNeedsNewProjectionMatrix_) {
-        // a placeholder projection matrix allocated on the stack. Column-major memory layout
-        float projectionMatrix[16] = {0};
+    const auto now = std::chrono::steady_clock::now();
+    const auto delta = std::chrono::duration<double>(now - lastFrameTime_).count();
+    lastFrameTime_ = now;
+    timeAccumulator_ += delta;
 
-        // build an orthographic projection matrix for 2d rendering
-        Utility::buildOrthographicMatrix(
-                projectionMatrix,
-                kProjectionHalfHeight,
-                float(width_) / height_,
-                kProjectionNearPlane,
-                kProjectionFarPlane);
-
-        // send the matrix to the shader
-        // Note: the shader must be active for this to work. Since we only have one shader for this
-        // demo, we can assume that it's active.
-        shader_->setProjectionMatrix(projectionMatrix);
-
-        // make sure the matrix isn't generated every frame
-        shaderNeedsNewProjectionMatrix_ = false;
+    while (timeAccumulator_ >= moveInterval_) {
+        timeAccumulator_ -= moveInterval_;
+        advanceSnake();
     }
 
-    // clear the color buffer
-    glClear(GL_COLOR_BUFFER_BIT);
-
-    // Render all the models. There's no depth testing in this sample so they're accepted in the
-    // order provided. But the sample EGL setup requests a 24 bit depth buffer so you could
-    // configure it at the end of initRenderer
-    if (!models_.empty()) {
-        for (const auto &model: models_) {
-            shader_->drawModel(model);
+    if (needsModelUpdate_) {
+        if (rebuildModels()) {
+            needsModelUpdate_ = false;
         }
     }
 
-    // Present the rendered image. This is an implicit glFlush.
+    if (shaderNeedsNewProjectionMatrix_ && height_ > 0) {
+        float projectionMatrix[16] = {0};
+        const float aspect = static_cast<float>(std::max<EGLint>(width_, 1))
+                / static_cast<float>(height_);
+        Utility::buildOrthographicMatrix(
+                projectionMatrix,
+                kProjectionHalfHeight,
+                aspect,
+                kProjectionNearPlane,
+                kProjectionFarPlane);
+        shader_->setProjectionMatrix(projectionMatrix);
+        shaderNeedsNewProjectionMatrix_ = false;
+    }
+
+    glClear(GL_COLOR_BUFFER_BIT);
+
+    for (const auto &model: models_) {
+        shader_->drawModel(model);
+    }
+
     auto swapResult = eglSwapBuffers(display_, surface_);
     assert(swapResult == EGL_TRUE);
 }
@@ -260,119 +259,263 @@ void Renderer::updateRenderArea() {
  * @brief Create any demo models we want for this demo.
  */
 void Renderer::createModels() {
-    /*
-     * This is a square:
-     * 0 --- 1
-     * | \   |
-     * |  \  |
-     * |   \ |
-     * 3 --- 2
-     */
-    std::vector<Vertex> vertices = {
-            Vertex(Vector3{1, 1, 0}, Vector2{0, 0}), // 0
-            Vertex(Vector3{-1, 1, 0}, Vector2{1, 0}), // 1
-            Vertex(Vector3{-1, -1, 0}, Vector2{1, 1}), // 2
-            Vertex(Vector3{1, -1, 0}, Vector2{0, 1}) // 3
-    };
-    std::vector<Index> indices = {
-            0, 1, 2, 0, 2, 3
-    };
+    snakeTexture_ = TextureAsset::createSolidColor(0x4C, 0xAF, 0x50);
+    foodTexture_ = TextureAsset::createSolidColor(0xFF, 0x57, 0x22);
 
-    // loads an image and assigns it to the square.
-    //
-    // Note: there is no texture management in this sample, so if you reuse an image be careful not
-    // to load it repeatedly. Since you get a shared_ptr you can safely reuse it in many models.
-    auto assetManager = app_->activity->assetManager;
-    auto spAndroidRobotTexture = TextureAsset::loadAsset(assetManager, "android_robot.png");
+    std::random_device rd;
+    randomEngine_.seed(rd());
 
-    // Create a model and put it in the back of the render list.
-    models_.emplace_back(vertices, indices, spAndroidRobotTexture);
+    resetGame();
 }
 
-void Renderer::handleInput() {
-    // handle all queued inputs
-    auto *inputBuffer = android_app_swap_input_buffers(app_);
-    if (!inputBuffer) {
-        // no inputs yet.
+void Renderer::resetGame() {
+    snake_.clear();
+    const int startX = gridWidth_ / 2;
+    const int startY = gridHeight_ / 2;
+    snake_.push_back({startX, startY});
+    snake_.push_back({startX - 1, startY});
+    snake_.push_back({startX - 2, startY});
+
+    direction_ = Direction::Right;
+    queuedDirection_ = direction_;
+    timeAccumulator_ = 0.0;
+    lastFrameTime_ = std::chrono::steady_clock::now();
+
+    spawnFood();
+    needsModelUpdate_ = true;
+}
+
+void Renderer::spawnFood() {
+    std::vector<Cell> emptyCells;
+    emptyCells.reserve(static_cast<size_t>(gridWidth_ * gridHeight_));
+    for (int y = 0; y < gridHeight_; ++y) {
+        for (int x = 0; x < gridWidth_; ++x) {
+            const bool occupied = std::any_of(
+                    snake_.begin(),
+                    snake_.end(),
+                    [x, y](const Cell &segment) {
+                        return segment.x == x && segment.y == y;
+                    });
+            if (!occupied) {
+                emptyCells.push_back({x, y});
+            }
+        }
+    }
+
+    if (emptyCells.empty()) {
+        resetGame();
         return;
     }
 
-    // handle motion events (motionEventsCounts can be 0).
+    std::uniform_int_distribution<size_t> distribution(0, emptyCells.size() - 1);
+    food_ = emptyCells[distribution(randomEngine_)];
+    needsModelUpdate_ = true;
+}
+
+bool Renderer::rebuildModels() {
+    if (!snakeTexture_ || !foodTexture_) {
+        return false;
+    }
+
+    if (width_ <= 0 || height_ <= 0) {
+        return false;
+    }
+
+    const float aspect = static_cast<float>(width_) / static_cast<float>(height_);
+    const float worldHeight = kProjectionHalfHeight * 2.f;
+    const float worldWidth = worldHeight * aspect;
+    const float cellWidth = worldWidth / static_cast<float>(gridWidth_);
+    const float cellHeight = worldHeight / static_cast<float>(gridHeight_);
+    const float minX = -worldWidth / 2.f;
+    const float minY = -worldHeight / 2.f;
+
+    models_.clear();
+    models_.reserve(snake_.size() + 1);
+
+    auto appendQuad = [&](const Cell &cell, const std::shared_ptr<TextureAsset> &texture) {
+        const float centerX = minX + (static_cast<float>(cell.x) + 0.5f) * cellWidth;
+        const float centerY = minY + (static_cast<float>(cell.y) + 0.5f) * cellHeight;
+        const float halfWidth = cellWidth / 2.f;
+        const float halfHeight = cellHeight / 2.f;
+
+        std::vector<Vertex> vertices = {
+                Vertex(Vector3{centerX + halfWidth, centerY + halfHeight, 0.f}, Vector2{0.f, 0.f}),
+                Vertex(Vector3{centerX - halfWidth, centerY + halfHeight, 0.f}, Vector2{1.f, 0.f}),
+                Vertex(Vector3{centerX - halfWidth, centerY - halfHeight, 0.f}, Vector2{1.f, 1.f}),
+                Vertex(Vector3{centerX + halfWidth, centerY - halfHeight, 0.f}, Vector2{0.f, 1.f}),
+        };
+        std::vector<Index> indices = {0, 1, 2, 0, 2, 3};
+        models_.emplace_back(std::move(vertices), std::move(indices), texture);
+    };
+
+    for (const auto &segment: snake_) {
+        appendQuad(segment, snakeTexture_);
+    }
+
+    appendQuad(food_, foodTexture_);
+    return true;
+}
+
+void Renderer::advanceSnake() {
+    if (snake_.empty()) {
+        return;
+    }
+
+    if (!isOpposite(queuedDirection_, direction_) || snake_.size() <= 1) {
+        direction_ = queuedDirection_;
+    }
+
+    Cell newHead = snake_.front();
+    switch (direction_) {
+        case Direction::Up:
+            newHead.y += 1;
+            break;
+        case Direction::Down:
+            newHead.y -= 1;
+            break;
+        case Direction::Left:
+            newHead.x -= 1;
+            break;
+        case Direction::Right:
+            newHead.x += 1;
+            break;
+    }
+
+    const bool hitWall = newHead.x < 0 || newHead.y < 0
+            || newHead.x >= gridWidth_ || newHead.y >= gridHeight_;
+    const bool hitSelf = std::any_of(
+            snake_.begin(),
+            snake_.end(),
+            [&newHead](const Cell &segment) {
+                return segment.x == newHead.x && segment.y == newHead.y;
+            });
+
+    if (hitWall || hitSelf) {
+        resetGame();
+        return;
+    }
+
+    snake_.insert(snake_.begin(), newHead);
+
+    if (newHead.x == food_.x && newHead.y == food_.y) {
+        spawnFood();
+    } else {
+        snake_.pop_back();
+    }
+
+    needsModelUpdate_ = true;
+}
+
+void Renderer::queueDirection(Direction direction) {
+    if (!isOpposite(direction, direction_) || snake_.size() <= 1) {
+        queuedDirection_ = direction;
+    }
+}
+
+bool Renderer::isOpposite(Direction lhs, Direction rhs) {
+    return (lhs == Direction::Up && rhs == Direction::Down)
+           || (lhs == Direction::Down && rhs == Direction::Up)
+           || (lhs == Direction::Left && rhs == Direction::Right)
+           || (lhs == Direction::Right && rhs == Direction::Left);
+}
+
+void Renderer::handleSwipe(float startX, float startY, float endX, float endY) {
+    float dx = endX - startX;
+    float dy = endY - startY;
+
+    const float minDistance = 16.f;
+    if (std::fabs(dx) < minDistance && std::fabs(dy) < minDistance) {
+        if (width_ > 0 && height_ > 0) {
+            const float centerX = static_cast<float>(width_) / 2.f;
+            const float centerY = static_cast<float>(height_) / 2.f;
+            dx = endX - centerX;
+            dy = endY - centerY;
+        }
+    }
+
+    if (std::fabs(dx) > std::fabs(dy)) {
+        queueDirection(dx > 0 ? Direction::Right : Direction::Left);
+    } else {
+        queueDirection(dy > 0 ? Direction::Down : Direction::Up);
+    }
+}
+
+void Renderer::handleInput() {
+    auto *inputBuffer = android_app_swap_input_buffers(app_);
+    if (!inputBuffer) {
+        return;
+    }
+
     for (auto i = 0; i < inputBuffer->motionEventsCount; i++) {
         auto &motionEvent = inputBuffer->motionEvents[i];
-        auto action = motionEvent.action;
-
-        // Find the pointer index, mask and bitshift to turn it into a readable value.
-        auto pointerIndex = (action & AMOTION_EVENT_ACTION_POINTER_INDEX_MASK)
+        if (motionEvent.pointerCount == 0) {
+            continue;
+        }
+        const auto action = motionEvent.action & AMOTION_EVENT_ACTION_MASK;
+        auto pointerIndex = (motionEvent.action & AMOTION_EVENT_ACTION_POINTER_INDEX_MASK)
                 >> AMOTION_EVENT_ACTION_POINTER_INDEX_SHIFT;
-        aout << "Pointer(s): ";
+        pointerIndex = std::min(pointerIndex, motionEvent.pointerCount - 1);
+        const auto &pointer = motionEvent.pointers[pointerIndex];
+        const float x = GameActivityPointerAxes_getX(&pointer);
+        const float y = GameActivityPointerAxes_getY(&pointer);
 
-        // get the x and y position of this event if it is not ACTION_MOVE.
-        auto &pointer = motionEvent.pointers[pointerIndex];
-        auto x = GameActivityPointerAxes_getX(&pointer);
-        auto y = GameActivityPointerAxes_getY(&pointer);
-
-        // determine the action type and process the event accordingly.
-        switch (action & AMOTION_EVENT_ACTION_MASK) {
+        switch (action) {
             case AMOTION_EVENT_ACTION_DOWN:
             case AMOTION_EVENT_ACTION_POINTER_DOWN:
-                aout << "(" << pointer.id << ", " << x << ", " << y << ") "
-                     << "Pointer Down";
+                touchActive_ = true;
+                touchStartX_ = x;
+                touchStartY_ = y;
                 break;
-
-            case AMOTION_EVENT_ACTION_CANCEL:
-                // treat the CANCEL as an UP event: doing nothing in the app, except
-                // removing the pointer from the cache if pointers are locally saved.
-                // code pass through on purpose.
             case AMOTION_EVENT_ACTION_UP:
             case AMOTION_EVENT_ACTION_POINTER_UP:
-                aout << "(" << pointer.id << ", " << x << ", " << y << ") "
-                     << "Pointer Up";
-                break;
-
-            case AMOTION_EVENT_ACTION_MOVE:
-                // There is no pointer index for ACTION_MOVE, only a snapshot of
-                // all active pointers; app needs to cache previous active pointers
-                // to figure out which ones are actually moved.
-                for (auto index = 0; index < motionEvent.pointerCount; index++) {
-                    pointer = motionEvent.pointers[index];
-                    x = GameActivityPointerAxes_getX(&pointer);
-                    y = GameActivityPointerAxes_getY(&pointer);
-                    aout << "(" << pointer.id << ", " << x << ", " << y << ")";
-
-                    if (index != (motionEvent.pointerCount - 1)) aout << ",";
-                    aout << " ";
+                if (touchActive_) {
+                    handleSwipe(touchStartX_, touchStartY_, x, y);
+                    touchActive_ = false;
                 }
-                aout << "Pointer Move";
+                break;
+            case AMOTION_EVENT_ACTION_CANCEL:
+                touchActive_ = false;
                 break;
             default:
-                aout << "Unknown MotionEvent Action: " << action;
+                break;
         }
-        aout << std::endl;
     }
-    // clear the motion input count in this buffer for main thread to re-use.
     android_app_clear_motion_events(inputBuffer);
 
-    // handle input key events.
     for (auto i = 0; i < inputBuffer->keyEventsCount; i++) {
         auto &keyEvent = inputBuffer->keyEvents[i];
-        aout << "Key: " << keyEvent.keyCode <<" ";
         switch (keyEvent.action) {
             case AKEY_EVENT_ACTION_DOWN:
-                aout << "Key Down";
+                switch (keyEvent.keyCode) {
+                    case AKEYCODE_DPAD_UP:
+                    case AKEYCODE_W:
+                        queueDirection(Direction::Up);
+                        break;
+                    case AKEYCODE_DPAD_DOWN:
+                    case AKEYCODE_S:
+                        queueDirection(Direction::Down);
+                        break;
+                    case AKEYCODE_DPAD_LEFT:
+                    case AKEYCODE_A:
+                        queueDirection(Direction::Left);
+                        break;
+                    case AKEYCODE_DPAD_RIGHT:
+                    case AKEYCODE_D:
+                        queueDirection(Direction::Right);
+                        break;
+                    case AKEYCODE_ENTER:
+                    case AKEYCODE_SPACE:
+                        resetGame();
+                        break;
+                    default:
+                        break;
+                }
                 break;
             case AKEY_EVENT_ACTION_UP:
-                aout << "Key Up";
-                break;
             case AKEY_EVENT_ACTION_MULTIPLE:
-                // Deprecated since Android API level 29.
-                aout << "Multiple Key Actions";
-                break;
             default:
-                aout << "Unknown KeyEvent Action: " << keyEvent.action;
+                break;
         }
-        aout << std::endl;
     }
-    // clear the key input count too.
     android_app_clear_key_events(inputBuffer);
 }

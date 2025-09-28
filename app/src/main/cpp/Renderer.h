@@ -77,6 +77,10 @@ private:
     void spawnFood();
     bool rebuildModels();
     void advanceSnake();
+    bool advanceBotSnake(Direction &botDirection);
+    Direction chooseBotDirection() const;
+    Cell computeNextCell(const Cell &current, Direction direction) const;
+    bool isCellOccupiedBySnake(const Cell &cell, const std::vector<Cell> &snake) const;
     void queueDirection(Direction direction);
     static bool isOpposite(Direction lhs, Direction rhs);
     void handleSwipe(float startX, float startY, float endX, float endY);
@@ -96,11 +100,14 @@ private:
     int gridWidth_ = 20;
     int gridHeight_ = 20;
     std::vector<Cell> snake_;
+    std::vector<Cell> botSnake_;
     Cell food_{};
     Direction direction_ = Direction::Right;
     Direction queuedDirection_ = Direction::Right;
+    Direction botDirection_ = Direction::Left;
     std::shared_ptr<TextureAsset> snakeTexture_;
     std::shared_ptr<TextureAsset> foodTexture_;
+    std::shared_ptr<TextureAsset> botTexture_;
     std::mt19937 randomEngine_;
     std::chrono::steady_clock::time_point lastFrameTime_;
     double timeAccumulator_ = 0.0;

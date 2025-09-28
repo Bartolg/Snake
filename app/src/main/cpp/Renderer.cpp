@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <limits>
 #include <random>
 #include <vector>
 
@@ -268,6 +269,7 @@ void Renderer::createModels() {
         snakeTexture_ = TextureAsset::createSolidColor(0x4C, 0xAF, 0x50);
     }
     foodTexture_ = TextureAsset::createSolidColor(0xFF, 0x57, 0x22);
+    botTexture_ = TextureAsset::createSolidColor(0x21, 0x96, 0xF3);
 
     std::random_device rd;
     randomEngine_.seed(rd());
@@ -277,14 +279,20 @@ void Renderer::createModels() {
 
 void Renderer::resetGame() {
     snake_.clear();
+    botSnake_.clear();
     const int startX = gridWidth_ / 2;
     const int startY = gridHeight_ / 2;
     snake_.push_back({startX, startY});
     snake_.push_back({startX - 1, startY});
     snake_.push_back({startX - 2, startY});
 
+    botSnake_.push_back({startX, startY + 3});
+    botSnake_.push_back({startX + 1, startY + 3});
+    botSnake_.push_back({startX + 2, startY + 3});
+
     direction_ = Direction::Right;
     queuedDirection_ = direction_;
+    botDirection_ = Direction::Left;
     timeAccumulator_ = 0.0;
     lastFrameTime_ = std::chrono::steady_clock::now();
 
@@ -300,6 +308,11 @@ void Renderer::spawnFood() {
             const bool occupied = std::any_of(
                     snake_.begin(),
                     snake_.end(),
+                    [x, y](const Cell &segment) {
+                        return segment.x == x && segment.y == y;
+                    }) || std::any_of(
+                    botSnake_.begin(),
+                    botSnake_.end(),
                     [x, y](const Cell &segment) {
                         return segment.x == x && segment.y == y;
                     });
@@ -337,7 +350,7 @@ bool Renderer::rebuildModels() {
     const float minY = -worldHeight / 2.f;
 
     models_.clear();
-    models_.reserve(snake_.size() + 1);
+    models_.reserve(snake_.size() + botSnake_.size() + 1);
 
     struct UVRect {
         float u0;
@@ -390,12 +403,16 @@ bool Renderer::rebuildModels() {
         appendQuad(segment, snakeTexture_, uvRect);
     }
 
+    for (const auto &segment : botSnake_) {
+        appendQuad(segment, botTexture_, fullTexture);
+    }
+
     appendQuad(food_, foodTexture_, fullTexture);
     return true;
 }
 
 void Renderer::advanceSnake() {
-    if (snake_.empty()) {
+    if (snake_.empty() || botSnake_.empty()) {
         return;
     }
 
@@ -403,59 +420,166 @@ void Renderer::advanceSnake() {
         direction_ = queuedDirection_;
     }
 
-    Cell newHead = snake_.front();
-    switch (direction_) {
-        case Direction::Up:
-            newHead.y += 1;
-            break;
-        case Direction::Down:
-            newHead.y -= 1;
-            break;
-        case Direction::Left:
-            newHead.x -= 1;
-            break;
-        case Direction::Right:
-            newHead.x += 1;
-            break;
+    if (!advanceBotSnake(botDirection_)) {
+        return;
     }
 
-    if (gridWidth_ > 0) {
-        if (newHead.x < 0) {
-            newHead.x = gridWidth_ - 1;
-        } else if (newHead.x >= gridWidth_) {
-            newHead.x = 0;
-        }
-    }
+    Cell newHead = computeNextCell(snake_.front(), direction_);
 
-    if (gridHeight_ > 0) {
-        if (newHead.y < 0) {
-            newHead.y = gridHeight_ - 1;
-        } else if (newHead.y >= gridHeight_) {
-            newHead.y = 0;
-        }
-    }
+    const bool hitSelf = isCellOccupiedBySnake(newHead, snake_);
+    const bool hitBot = isCellOccupiedBySnake(newHead, botSnake_);
 
-    const bool hitSelf = std::any_of(
-            snake_.begin(),
-            snake_.end(),
-            [&newHead](const Cell &segment) {
-                return segment.x == newHead.x && segment.y == newHead.y;
-            });
-
-    if (hitSelf) {
+    if (hitSelf || hitBot) {
         resetGame();
         return;
     }
 
     snake_.insert(snake_.begin(), newHead);
 
-    if (newHead.x == food_.x && newHead.y == food_.y) {
-        spawnFood();
-    } else {
+    const bool playerAteFood = newHead.x == food_.x && newHead.y == food_.y;
+    if (!playerAteFood) {
         snake_.pop_back();
     }
 
+    bool botAteFood = false;
+    if (!botSnake_.empty()) {
+        const auto &botHead = botSnake_.front();
+        if (botHead.x == food_.x && botHead.y == food_.y) {
+            botAteFood = true;
+        } else {
+            botSnake_.pop_back();
+        }
+
+        if (botHead.x == newHead.x && botHead.y == newHead.y) {
+            resetGame();
+            return;
+        }
+    }
+
+    if (playerAteFood || botAteFood) {
+        spawnFood();
+    }
+
     needsModelUpdate_ = true;
+}
+
+bool Renderer::advanceBotSnake(Direction &botDirection) {
+    if (botSnake_.empty()) {
+        return true;
+    }
+
+    if (botSnake_.size() <= 1) {
+        botDirection = chooseBotDirection();
+    } else {
+        const Direction desired = chooseBotDirection();
+        if (!isOpposite(desired, botDirection)) {
+            botDirection = desired;
+        }
+    }
+
+    Cell newHead = computeNextCell(botSnake_.front(), botDirection);
+
+    const bool hitSelf = isCellOccupiedBySnake(newHead, botSnake_);
+    const bool hitPlayer = isCellOccupiedBySnake(newHead, snake_);
+    if (hitSelf || hitPlayer) {
+        resetGame();
+        return false;
+    }
+
+    botSnake_.insert(botSnake_.begin(), newHead);
+    return true;
+}
+
+Renderer::Direction Renderer::chooseBotDirection() const {
+    if (botSnake_.empty()) {
+        return botDirection_;
+    }
+
+    const std::array<Direction, 4> directions{
+            Direction::Up,
+            Direction::Down,
+            Direction::Left,
+            Direction::Right,
+    };
+
+    const auto head = botSnake_.front();
+    Direction bestDirection = botDirection_;
+    int bestDistance = std::numeric_limits<int>::max();
+
+    for (const auto direction : directions) {
+        if (botSnake_.size() > 1 && isOpposite(direction, botDirection_)) {
+            continue;
+        }
+
+        const Cell nextCell = computeNextCell(head, direction);
+        if (isCellOccupiedBySnake(nextCell, botSnake_)) {
+            continue;
+        }
+        if (isCellOccupiedBySnake(nextCell, snake_)) {
+            continue;
+        }
+
+        int dx = std::abs(nextCell.x - food_.x);
+        int dy = std::abs(nextCell.y - food_.y);
+        if (gridWidth_ > 0) {
+            dx = std::min(dx, gridWidth_ - dx);
+        }
+        if (gridHeight_ > 0) {
+            dy = std::min(dy, gridHeight_ - dy);
+        }
+        const int distance = dx + dy;
+        if (distance < bestDistance) {
+            bestDistance = distance;
+            bestDirection = direction;
+        }
+    }
+
+    return bestDirection;
+}
+
+Renderer::Cell Renderer::computeNextCell(const Cell &current, Direction direction) const {
+    Cell next = current;
+    switch (direction) {
+        case Direction::Up:
+            next.y += 1;
+            break;
+        case Direction::Down:
+            next.y -= 1;
+            break;
+        case Direction::Left:
+            next.x -= 1;
+            break;
+        case Direction::Right:
+            next.x += 1;
+            break;
+    }
+
+    if (gridWidth_ > 0) {
+        if (next.x < 0) {
+            next.x = gridWidth_ - 1;
+        } else if (next.x >= gridWidth_) {
+            next.x = 0;
+        }
+    }
+
+    if (gridHeight_ > 0) {
+        if (next.y < 0) {
+            next.y = gridHeight_ - 1;
+        } else if (next.y >= gridHeight_) {
+            next.y = 0;
+        }
+    }
+
+    return next;
+}
+
+bool Renderer::isCellOccupiedBySnake(const Cell &cell, const std::vector<Cell> &snake) const {
+    return std::any_of(
+            snake.begin(),
+            snake.end(),
+            [&cell](const Cell &segment) {
+                return segment.x == cell.x && segment.y == cell.y;
+            });
 }
 
 void Renderer::queueDirection(Direction direction) {

@@ -452,9 +452,11 @@ void Renderer::handleInput() {
             continue;
         }
         const auto action = motionEvent.action & AMOTION_EVENT_ACTION_MASK;
-        auto pointerIndex = (motionEvent.action & AMOTION_EVENT_ACTION_POINTER_INDEX_MASK)
-                >> AMOTION_EVENT_ACTION_POINTER_INDEX_SHIFT;
-        pointerIndex = std::min(pointerIndex, motionEvent.pointerCount - 1);
+        const size_t pointerCount = static_cast<size_t>(motionEvent.pointerCount);
+        auto pointerIndex = static_cast<size_t>(
+                (motionEvent.action & AMOTION_EVENT_ACTION_POINTER_INDEX_MASK)
+                >> AMOTION_EVENT_ACTION_POINTER_INDEX_SHIFT);
+        pointerIndex = std::min(pointerIndex, pointerCount - 1);
         const auto &pointer = motionEvent.pointers[pointerIndex];
         const float x = GameActivityPointerAxes_getX(&pointer);
         const float y = GameActivityPointerAxes_getY(&pointer);

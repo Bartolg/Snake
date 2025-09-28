@@ -5,6 +5,7 @@
 #include <GLES3/gl3.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <random>
 #include <vector>
@@ -259,7 +260,13 @@ void Renderer::updateRenderArea() {
  * @brief Create any demo models we want for this demo.
  */
 void Renderer::createModels() {
-    snakeTexture_ = TextureAsset::createSolidColor(0x4C, 0xAF, 0x50);
+    auto *assetManager = app_ && app_->activity ? app_->activity->assetManager : nullptr;
+    if (assetManager) {
+        snakeTexture_ = TextureAsset::loadAsset(assetManager, "snake.png");
+    }
+    if (!snakeTexture_) {
+        snakeTexture_ = TextureAsset::createSolidColor(0x4C, 0xAF, 0x50);
+    }
     foodTexture_ = TextureAsset::createSolidColor(0xFF, 0x57, 0x22);
 
     std::random_device rd;
@@ -332,27 +339,58 @@ bool Renderer::rebuildModels() {
     models_.clear();
     models_.reserve(snake_.size() + 1);
 
-    auto appendQuad = [&](const Cell &cell, const std::shared_ptr<TextureAsset> &texture) {
+    struct UVRect {
+        float u0;
+        float v0;
+        float u1;
+        float v1;
+    };
+
+    auto appendQuad = [&](const Cell &cell,
+                          const std::shared_ptr<TextureAsset> &texture,
+                          const UVRect &uvRect) {
         const float centerX = minX + (static_cast<float>(cell.x) + 0.5f) * cellWidth;
         const float centerY = minY + (static_cast<float>(cell.y) + 0.5f) * cellHeight;
         const float halfWidth = cellWidth / 2.f;
         const float halfHeight = cellHeight / 2.f;
 
         std::vector<Vertex> vertices = {
-                Vertex(Vector3{centerX + halfWidth, centerY + halfHeight, 0.f}, Vector2{0.f, 0.f}),
-                Vertex(Vector3{centerX - halfWidth, centerY + halfHeight, 0.f}, Vector2{1.f, 0.f}),
-                Vertex(Vector3{centerX - halfWidth, centerY - halfHeight, 0.f}, Vector2{1.f, 1.f}),
-                Vertex(Vector3{centerX + halfWidth, centerY - halfHeight, 0.f}, Vector2{0.f, 1.f}),
+                Vertex(Vector3{centerX + halfWidth, centerY + halfHeight, 0.f},
+                       Vector2{uvRect.u0, uvRect.v0}),
+                Vertex(Vector3{centerX - halfWidth, centerY + halfHeight, 0.f},
+                       Vector2{uvRect.u1, uvRect.v0}),
+                Vertex(Vector3{centerX - halfWidth, centerY - halfHeight, 0.f},
+                       Vector2{uvRect.u1, uvRect.v1}),
+                Vertex(Vector3{centerX + halfWidth, centerY - halfHeight, 0.f},
+                       Vector2{uvRect.u0, uvRect.v1}),
         };
         std::vector<Index> indices = {0, 1, 2, 0, 2, 3};
         models_.emplace_back(std::move(vertices), std::move(indices), texture);
     };
 
-    for (const auto &segment: snake_) {
-        appendQuad(segment, snakeTexture_);
+    const UVRect fullTexture{0.f, 0.f, 1.f, 1.f};
+    const std::array<UVRect, 4> snakeUVs{{
+            {0.f, 0.f, 0.25f, 1.f},
+            {0.25f, 0.f, 0.5f, 1.f},
+            {0.5f, 0.f, 0.75f, 1.f},
+            {0.75f, 0.f, 1.f, 1.f},
+    }};
+
+    for (size_t index = 0; index < snake_.size(); ++index) {
+        const auto &segment = snake_[index];
+        UVRect uvRect = fullTexture;
+        if (snakeTexture_) {
+            if (index == 0) {
+                uvRect = snakeUVs[0];
+            } else {
+                const size_t bodyIndex = 1 + ((index - 1) % (snakeUVs.size() - 1));
+                uvRect = snakeUVs[bodyIndex];
+            }
+        }
+        appendQuad(segment, snakeTexture_, uvRect);
     }
 
-    appendQuad(food_, foodTexture_);
+    appendQuad(food_, foodTexture_, fullTexture);
     return true;
 }
 

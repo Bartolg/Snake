@@ -11,10 +11,19 @@ TextureAsset::loadAsset(AAssetManager *assetManager, const std::string &assetPat
             assetPath.c_str(),
             AASSET_MODE_BUFFER);
 
+    if (!pAndroidRobotPng) {
+        aout << "Failed to open asset: " << assetPath << std::endl;
+        return nullptr;
+    }
+
     // Make a decoder to turn it into a texture
     AImageDecoder *pAndroidDecoder = nullptr;
     auto result = AImageDecoder_createFromAAsset(pAndroidRobotPng, &pAndroidDecoder);
-    assert(result == ANDROID_IMAGE_DECODER_SUCCESS);
+    if (result != ANDROID_IMAGE_DECODER_SUCCESS) {
+        aout << "Failed to create decoder for asset: " << assetPath << std::endl;
+        AAsset_close(pAndroidRobotPng);
+        return nullptr;
+    }
 
     // make sure we get 8 bits per channel out. RGBA order.
     AImageDecoder_setAndroidBitmapFormat(pAndroidDecoder, ANDROID_BITMAP_FORMAT_RGBA_8888);
@@ -35,7 +44,12 @@ TextureAsset::loadAsset(AAssetManager *assetManager, const std::string &assetPat
             upAndroidImageData->data(),
             stride,
             upAndroidImageData->size());
-    assert(decodeResult == ANDROID_IMAGE_DECODER_SUCCESS);
+    if (decodeResult != ANDROID_IMAGE_DECODER_SUCCESS) {
+        aout << "Failed to decode asset: " << assetPath << std::endl;
+        AImageDecoder_delete(pAndroidDecoder);
+        AAsset_close(pAndroidRobotPng);
+        return nullptr;
+    }
 
     // Get an opengl texture
     GLuint textureId;

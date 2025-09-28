@@ -296,11 +296,16 @@ void Renderer::resetGame() {
     timeAccumulator_ = 0.0;
     lastFrameTime_ = std::chrono::steady_clock::now();
 
+    food_.clear();
     spawnFood();
     needsModelUpdate_ = true;
 }
 
 void Renderer::spawnFood() {
+    if (food_.size() >= targetFoodCount_) {
+        return;
+    }
+
     std::vector<Cell> emptyCells;
     emptyCells.reserve(static_cast<size_t>(gridWidth_ * gridHeight_));
     for (int y = 0; y < gridHeight_; ++y) {
@@ -315,6 +320,11 @@ void Renderer::spawnFood() {
                     botSnake_.end(),
                     [x, y](const Cell &segment) {
                         return segment.x == x && segment.y == y;
+                    }) || std::any_of(
+                    food_.begin(),
+                    food_.end(),
+                    [x, y](const Cell &existingFood) {
+                        return existingFood.x == x && existingFood.y == y;
                     });
             if (!occupied) {
                 emptyCells.push_back({x, y});
@@ -327,9 +337,15 @@ void Renderer::spawnFood() {
         return;
     }
 
-    std::uniform_int_distribution<size_t> distribution(0, emptyCells.size() - 1);
-    food_ = emptyCells[distribution(randomEngine_)];
-    needsModelUpdate_ = true;
+    std::shuffle(emptyCells.begin(), emptyCells.end(), randomEngine_);
+    const size_t spawnCount = std::min(emptyCells.size(), targetFoodCount_ - food_.size());
+    for (size_t i = 0; i < spawnCount; ++i) {
+        food_.push_back(emptyCells[i]);
+    }
+
+    if (spawnCount > 0) {
+        needsModelUpdate_ = true;
+    }
 }
 
 bool Renderer::rebuildModels() {
@@ -350,7 +366,7 @@ bool Renderer::rebuildModels() {
     const float minY = -worldHeight / 2.f;
 
     models_.clear();
-    models_.reserve(snake_.size() + botSnake_.size() + 1);
+    models_.reserve(snake_.size() + botSnake_.size() + food_.size());
 
     struct UVRect {
         float u0;
@@ -407,7 +423,9 @@ bool Renderer::rebuildModels() {
         appendQuad(segment, botTexture_, fullTexture);
     }
 
-    appendQuad(food_, foodTexture_, fullTexture);
+    for (const auto &foodCell : food_) {
+        appendQuad(foodCell, foodTexture_, fullTexture);
+    }
     return true;
 }
 
@@ -436,7 +454,16 @@ void Renderer::advanceSnake() {
 
     snake_.insert(snake_.begin(), newHead);
 
-    const bool playerAteFood = newHead.x == food_.x && newHead.y == food_.y;
+    bool playerAteFood = false;
+    for (auto it = food_.begin(); it != food_.end();) {
+        if (newHead.x == it->x && newHead.y == it->y) {
+            it = food_.erase(it);
+            playerAteFood = true;
+        } else {
+            ++it;
+        }
+    }
+
     if (!playerAteFood) {
         snake_.pop_back();
     }
@@ -444,9 +471,16 @@ void Renderer::advanceSnake() {
     bool botAteFood = false;
     if (!botSnake_.empty()) {
         const auto &botHead = botSnake_.front();
-        if (botHead.x == food_.x && botHead.y == food_.y) {
-            botAteFood = true;
-        } else {
+        for (auto it = food_.begin(); it != food_.end();) {
+            if (botHead.x == it->x && botHead.y == it->y) {
+                it = food_.erase(it);
+                botAteFood = true;
+            } else {
+                ++it;
+            }
+        }
+
+        if (!botAteFood) {
             botSnake_.pop_back();
         }
 
@@ -519,15 +553,22 @@ Renderer::Direction Renderer::chooseBotDirection() const {
             continue;
         }
 
-        int dx = std::abs(nextCell.x - food_.x);
-        int dy = std::abs(nextCell.y - food_.y);
-        if (gridWidth_ > 0) {
-            dx = std::min(dx, gridWidth_ - dx);
+        int distance = std::numeric_limits<int>::max();
+        if (!food_.empty()) {
+            for (const auto &foodCell : food_) {
+                int dx = std::abs(nextCell.x - foodCell.x);
+                int dy = std::abs(nextCell.y - foodCell.y);
+                if (gridWidth_ > 0) {
+                    dx = std::min(dx, gridWidth_ - dx);
+                }
+                if (gridHeight_ > 0) {
+                    dy = std::min(dy, gridHeight_ - dy);
+                }
+                distance = std::min(distance, dx + dy);
+            }
+        } else {
+            distance = 0;
         }
-        if (gridHeight_ > 0) {
-            dy = std::min(dy, gridHeight_ - dy);
-        }
-        const int distance = dx + dy;
         if (distance < bestDistance) {
             bestDistance = distance;
             bestDirection = direction;
